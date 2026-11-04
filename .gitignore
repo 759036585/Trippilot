@@ -1,0 +1,45 @@
+# ============================================================
+#  TripPilot 仓库根目录 .gitignore
+#  原则：真实密钥只写在 .env.local 里，永远不进版本库
+# ============================================================
+
+# ---------- 环境变量 / 密钥 ----------
+# .env.local 存真实密钥，.env 可能被临时填入密钥，两者都不提交
+.env
+.env.*
+*.local
+# 只放占位符的模板文件可以提交
+!.env.example
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ---------- Node / 前端 ----------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo
+
+# ---------- 日志与系统文件 ----------
+logs/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# ---------- 编辑器 ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# ---------- 其它本地文件 ----------
+*.bak
+*.tmp
