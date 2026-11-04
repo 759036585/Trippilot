@@ -45,9 +45,9 @@ jobs:
       - name: 类型检查并构建前端
         working-directory: trippilot-frontend
         env:
-          # 生产环境同源部署：留空 → 请求走 /api/v1/...，由 nginx 反代到后端
+          # 生产环境同源部署：默认 '/' 会被前端清成空串 → 请求走 /api/v1/...，由 nginx 反代到后端
           # 如果想前后端分离部署，在仓库变量里设置 VITE_API_BASE_URL 为后端公网地址
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || '/' }}
           VITE_AMAP_JS_KEY: ${{ secrets.VITE_AMAP_JS_KEY }}
           VITE_AMAP_SECURITY_CODE: ${{ secrets.VITE_AMAP_SECURITY_CODE }}
         run: |
