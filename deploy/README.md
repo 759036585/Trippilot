@@ -177,3 +177,51 @@ cd trippilot-frontend
 npm run build
 npm run preview
 ```
+
+---
+
+## 六、阿里云 ECS（Alibaba Cloud Linux 3）适配
+
+前面几步是按 Ubuntu 写的，Alibaba Cloud Linux 3 是 RHEL 8 系，差异如下：
+
+| Ubuntu 写法 | Alibaba Cloud Linux 3 |
+|---|---|
+| `apt install nginx` | `dnf install -y nginx` |
+| `/etc/nginx/sites-available/` | `/etc/nginx/conf.d/` |
+| 默认 `python3` 可用 | **自带 python3 只有 3.6，必须 `dnf install -y python3.11`** |
+| `adduser trippilot` | 可以直接用自带的 `admin` 用户（有免密 sudo） |
+| ufw / firewalld | 默认都关着，但**阿里云安全组要放行 80 端口** |
+
+一个可用的完整流程：
+
+```bash
+# 1. 依赖
+sudo dnf install -y python3.11 python3.11-pip nginx
+
+# 2. 数据库（PostgreSQL 13 默认已是 scram-sha-256，密码认证可用）
+DBPASS=$(openssl rand -hex 16)
+echo "数据库密码: $DBPASS"
+sudo -u postgres psql -c "CREATE ROLE trippilot LOGIN PASSWORD '$DBPASS';"
+sudo -u postgres createdb -O trippilot trippilot_db
+
+# 3. 后端
+cd /opt/trippilot/trippilot-backend
+python3.11 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cp .env.example .env.local   # 然后编辑，DATABASE_URL 用上面生成的密码
+
+# 4. systemd（把 User/Group 改成实际用户 admin）
+sudo sed -e 's/^User=trippilot/User=admin/' -e 's/^Group=trippilot/Group=admin/' \
+  /opt/trippilot/deploy/trippilot.service | sudo tee /etc/systemd/system/trippilot.service
+sudo systemctl daemon-reload && sudo systemctl enable --now trippilot
+
+# 5. nginx（内置默认站点仍占用 80，所以这里用具体 server_name 匹配）
+PUBIP=$(curl -s http://100.100.100.200/latest/meta-data/eipv4)
+sudo cp /opt/trippilot/deploy/nginx.conf /etc/nginx/conf.d/trippilot.conf
+sudo sed -i "s/server_name your-domain.com;/server_name ${PUBIP};/" /etc/nginx/conf.d/trippilot.conf
+sudo nginx -t && sudo systemctl enable --now nginx
+```
+
+生成的项目密钥放在 `.env.local`，`AUTH_SECRET` 用 `openssl rand -base64 48` 重新生成，不要复用本地开发环境的值。
+
+> 前端产物仍然由 CI 构建。手动部署阶段可以在本地 `npm run build` 后用 `scp -r dist admin@IP:/opt/trippilot/trippilot-frontend/` 上传。

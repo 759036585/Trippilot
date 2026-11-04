@@ -3,6 +3,9 @@ Description=TripPilot FastAPI backend
 Documentation=https://github.com/759036585/Trippilot
 After=network.target postgresql.service
 Wants=postgresql.service
+# 依赖安装期间可能短暂起不来，别急着判定失败（这两个键必须放在 [Unit] 里）
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -19,9 +22,6 @@ ExecStart=/opt/trippilot/trippilot-backend/venv/bin/uvicorn main:app --host 127.
 
 Restart=always
 RestartSec=3
-# 依赖安装期间可能短暂起不来，别急着判定失败
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 StandardOutput=journal
 StandardError=journal

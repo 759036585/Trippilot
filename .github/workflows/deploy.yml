@@ -170,8 +170,11 @@ jobs:
           fi
 
           if [ ! -d venv ]; then
-            echo "首次部署，创建虚拟环境"
-            python3 -m venv venv
+            # 服务器是 Alibaba Cloud Linux 3，系统自带 python3 只有 3.6，项目需要 3.10+
+            # 优先用 python3.11，没有就退回 python3（换到别的发行版也能跑）
+            PYTHON_BIN=$(command -v python3.11 || command -v python3)
+            echo "首次部署，用 $PYTHON_BIN 创建虚拟环境"
+            "$PYTHON_BIN" -m venv venv
           fi
 
           ./venv/bin/pip install -q --upgrade pip
