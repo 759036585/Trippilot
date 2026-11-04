@@ -1,8 +1,9 @@
 // src/api/request.ts
 import axios from 'axios'
 
-// 后端地址从 .env.local 读取（VITE_API_BASE_URL），没配就用本地默认值
-const BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
+// 后端地址从 .env.local 读取（VITE_API_BASE_URL）
+// 没配置 → 本地开发默认 8000 端口；显式配置为空串 → 走同源，由 nginx 反代 /api（生产部署用）
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/+$/, '')
 
 // 创建一个 axios 实例，统一配置
 const request = axios.create({

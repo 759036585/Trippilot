@@ -1,0 +1,200 @@
+name: Deploy
+
+# 推送 main 或手动触发时：先在 GitHub 上构建检查，再同步到云服务器并重启服务
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一时间只允许一个部署在跑，排队而不是互相打断
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1. 构建：前端类型检查 + 打包，后端装依赖 + 语法检查
+  #    任何一步失败都不会进入部署
+  # ---------------------------------------------------------------
+  build:
+    name: 构建与检查
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: trippilot-frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: trippilot-frontend
+        run: npm ci
+
+      - name: 类型检查并构建前端
+        working-directory: trippilot-frontend
+        env:
+          # 生产环境同源部署：留空 → 请求走 /api/v1/...，由 nginx 反代到后端
+          # 如果想前后端分离部署，在仓库变量里设置 VITE_API_BASE_URL 为后端公网地址
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_AMAP_JS_KEY: ${{ secrets.VITE_AMAP_JS_KEY }}
+          VITE_AMAP_SECURITY_CODE: ${{ secrets.VITE_AMAP_SECURITY_CODE }}
+        run: |
+          if [ -z "$VITE_AMAP_JS_KEY" ]; then
+            echo "::error::缺少 VITE_AMAP_JS_KEY，地图会加载失败。请在 Settings → Secrets and variables → Actions 中配置，参考 deploy/README.md"
+            exit 1
+          fi
+          npm run build
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: trippilot-backend/requirements.txt
+
+      - name: 安装后端依赖并做语法检查
+        working-directory: trippilot-backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m compileall -q main.py config.py database services
+
+      - name: 保存前端构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: trippilot-frontend/dist
+          retention-days: 3
+
+  # ---------------------------------------------------------------
+  # 2. 部署：同步代码与产物到服务器，重启后端、重载 nginx
+  # ---------------------------------------------------------------
+  deploy:
+    name: 部署到服务器
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: 检查部署配置
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+        run: |
+          missing=""
+          [ -n "$SSH_PRIVATE_KEY" ] || missing="$missing SSH_PRIVATE_KEY"
+          [ -n "$SERVER_HOST" ]     || missing="$missing SERVER_HOST"
+          [ -n "$SERVER_USER" ]     || missing="$missing SERVER_USER"
+          [ -n "$APP_DIR" ]         || missing="$missing APP_DIR"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 secrets:$missing，配置方法见 deploy/README.md"
+            exit 1
+          fi
+
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 下载前端构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: trippilot-frontend/dist
+
+      - name: 配置 SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$SERVER_PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts
+
+      - name: 同步代码到服务器
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+        run: |
+          RSYNC_SSH="ssh -i ~/.ssh/deploy_key -p $SERVER_PORT -o StrictHostKeyChecking=yes"
+
+          # 同步源码：排除依赖目录、构建产物和本地密钥文件
+          # （--exclude 的路径不会被 --delete 误删，服务器上的 .env.local 和 venv 是安全的）
+          rsync -az --delete -e "$RSYNC_SSH" \
+            --exclude '.git/' \
+            --exclude 'trippilot-frontend/node_modules/' \
+            --exclude 'trippilot-frontend/dist/' \
+            --exclude 'trippilot-backend/venv/' \
+            --exclude '**/__pycache__/' \
+            --exclude '*.pyc' \
+            --exclude '.env.local' \
+            ./ "$SERVER_USER@$SERVER_HOST:$APP_DIR/"
+
+          # 前端产物来自 CI 构建，单独同步，保证旧文件被清理干净
+          rsync -az --delete -e "$RSYNC_SSH" \
+            trippilot-frontend/dist/ \
+            "$SERVER_USER@$SERVER_HOST:$APP_DIR/trippilot-frontend/dist/"
+
+      - name: 安装依赖并重启服务
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$SERVER_PORT" -o StrictHostKeyChecking=yes \
+            "$SERVER_USER@$SERVER_HOST" APP_DIR="$APP_DIR" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          cd "$APP_DIR/trippilot-backend"
+
+          if [ ! -f .env.local ]; then
+            echo "服务器上缺少 $APP_DIR/trippilot-backend/.env.local，请先按 deploy/README.md 配置"
+            exit 1
+          fi
+
+          if [ ! -d venv ]; then
+            echo "首次部署，创建虚拟环境"
+            python3 -m venv venv
+          fi
+
+          ./venv/bin/pip install -q --upgrade pip
+          ./venv/bin/pip install -q -r requirements.txt
+
+          echo "重启后端服务"
+          sudo systemctl restart trippilot
+
+          echo "健康检查"
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 3 http://127.0.0.1:8000/ > /dev/null; then
+              echo "后端已启动"
+              break
+            fi
+            if [ "$i" = "5" ]; then
+              echo "健康检查失败，最近日志："
+              sudo journalctl -u trippilot -n 50 --no-pager
+              exit 1
+            fi
+            sleep 2
+          done
+
+          echo "重载 nginx"
+          sudo nginx -t
+          sudo systemctl reload nginx
+          REMOTE

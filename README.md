@@ -77,6 +77,12 @@ npm run dev
 
 打开 http://localhost:5173 即可。修改 `.env.local` 后需要重启 `npm run dev` 才会生效。
 
+## 部署
+
+推送到 `main` 会触发 [GitHub Actions](.github/workflows/deploy.yml)：构建前端 → 检查后端 → rsync 到云服务器 → 重启 uvicorn → 重载 nginx。
+
+服务器准备、Secrets 配置和排错见 [deploy/README.md](deploy/README.md)，配套文件在 [deploy/](deploy/)（systemd 服务与 nginx 站点配置）。
+
 ## 配置说明
 
 后端需要以下变量：
