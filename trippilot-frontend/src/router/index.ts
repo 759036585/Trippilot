@@ -44,7 +44,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/workbench',
     name: 'Workbench',
-    component: () => import('../views/Workbench.vue')
+    component: () => import('../views/workbench/Workbench.vue')
   },
   // 404 兜底：未匹配的路径统一重定向到首页，避免空白页面
   {

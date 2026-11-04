@@ -31,7 +31,8 @@ trippilot/
 │   └── services/          # agent / amap / auth
 └── trippilot-frontend/    # Vue 3 前端
     └── src/
-        ├── views/         # Home / CreateTrip / Workbench / MyTrips / Login
+        ├── views/         # Home / CreateTrip / MyTrips / Login
+        │   └── workbench/ # 行程工作台：页面 + 子组件 + composables
         ├── components/    # AppHeader 等
         ├── api/           # axios 封装
         └── stores/        # Pinia（用户登录态）
