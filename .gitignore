@@ -11,6 +11,10 @@
 # 只放占位符的模板文件可以提交
 !.env.example
 
+# SSH 部署私钥（本地生成的密钥对，绝不提交）
+deploy_key
+deploy_key.pub
+
 # ---------- Python ----------
 __pycache__/
 *.py[cod]

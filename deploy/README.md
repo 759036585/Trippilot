@@ -7,13 +7,13 @@ push main
    ↓
 build（GitHub 跑）：npm ci → vue-tsc + vite build → pip install → compileall
    ↓
-deploy（GitHub 跑）：rsync 源码 + dist → 服务器，pip install → systemctl restart → 健康检查 → nginx reload
+deploy（GitHub 跑）：tar over ssh 传源码 + dist → 服务器，pip install → systemctl restart → 健康检查 → nginx reload
    ↓
 nginx:  / → /opt/trippilot/trippilot-frontend/dist
         /api/ → 127.0.0.1:8000
 ```
 
-服务器上不需要装 Node，前端产物在 GitHub 上构建好再传过去；也不需要把仓库 clone 到服务器，代码由 rsync 同步。
+服务器上不需要装 Node，前端产物在 GitHub 上构建好再传过去；也不需要把仓库 clone 到服务器，代码由 `tar | ssh` 同步（服务器不需要装 rsync）。
 
 ---
 
@@ -51,7 +51,7 @@ sudo -u trippilot nano /opt/trippilot/trippilot-backend/.env.local
 
 按模板填好数据库、高德、大模型和 `AUTH_SECRET`。
 
-> ⚠️ 这个文件**不在 git 里，也不会被部署覆盖**（rsync 排除了 `.env.local`），但首次部署要求它已存在，否则流水线会直接报错退出。
+> ⚠️ 这个文件**不在 git 里，也不会被部署覆盖**（同步时排除了 `.env.local`），但首次部署要求它已存在，否则流水线会直接报错退出。
 >
 > 如果第一次部署前目录里还没有 `.env.example`，可以先本地 `scp` 一个上去，或者手写一份。
 
@@ -144,7 +144,7 @@ ssh-copy-id -i deploy_key.pub trippilot@你的服务器IP
 
 1. 检查 secrets 是否齐全（缺了会明确报出缺哪个）
 2. 在 GitHub 上构建前端
-3. rsync 同步代码（跳过 `venv/`、`node_modules/`、`.env.local`）
+3. `tar | ssh` 同步代码（跳过 `venv/`、`node_modules/`、`dist/`、`.env.local`）
 4. 服务器端创建 venv、装依赖
 5. `systemctl restart trippilot`，轮询 `http://127.0.0.1:8000/` 做健康检查
 6. `nginx -t && systemctl reload nginx`

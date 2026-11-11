@@ -9,7 +9,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-# 换成服务器上实际运行服务的用户（要和 rsync 使用的部署用户一致，才能读到 .env.local）
+# 换成服务器上实际运行服务的用户（要和部署用的 SSH 用户一致，才能读到 .env.local）
 User=trippilot
 Group=trippilot
 WorkingDirectory=/opt/trippilot/trippilot-backend
