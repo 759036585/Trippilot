@@ -67,15 +67,20 @@ export function useRoutes(options: UseRoutesOptions) {
 
     routesLoading.value = true
     try {
-      const res: any = await request.post('/api/v1/routes', {
-        // 公交规划需要城市，直接用行程目的地
-        city: options.destination.value || '',
-        segments: segs.map((s) => ({
-          origin: s.origin,
-          destination: s.destination,
-          mode: travelMode.value
-        }))
-      })
+      const res: any = await request.post(
+        '/api/v1/routes',
+        {
+          // 公交规划需要城市，直接用行程目的地
+          city: options.destination.value || '',
+          segments: segs.map((s) => ({
+            origin: s.origin,
+            destination: s.destination,
+            mode: travelMode.value
+          }))
+        },
+        // 一次要算十几段路线，高德 QPS 有限，给足时间
+        { timeout: 30000 }
+      )
       if (seq !== requestSeq) return
       const next: Record<string, RouteInfo> = {}
       segs.forEach((seg, i) => {

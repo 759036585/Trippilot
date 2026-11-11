@@ -10,7 +10,9 @@
     </div>
 
     <div class="trip-meta" v-if="ready && destination">
-      <span class="pill pill--dest">{{ destination }}</span>
+      <span class="pill pill--dest">
+        <template v-if="origin">{{ origin }}<i class="route-arrow">→</i></template>{{ destination }}
+      </span>
       <span class="pill">{{ dayCount }} 天 · {{ stopCount }} 个地点</span>
       <span class="pill" v-if="dateRange">{{ dateRange }}</span>
       <span class="badge-done">已生成</span>
@@ -28,6 +30,7 @@ import { RefreshRight } from '@element-plus/icons-vue'
 
 defineProps<{
   ready: boolean
+  origin?: string
   destination?: string
   dayCount: number
   stopCount: number
@@ -101,6 +104,12 @@ const emit = defineEmits<{ home: [] }>()
   background: var(--teal-soft);
   border-color: #c9f0e8;
   font-weight: 600;
+}
+.route-arrow {
+  font-style: normal;
+  color: #94a3b8;
+  margin: 0 4px;
+  font-weight: 400;
 }
 .badge-done {
   font-size: 12px;

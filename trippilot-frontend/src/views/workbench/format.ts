@@ -1,11 +1,32 @@
 // src/views/workbench/format.ts
 // 纯函数工具：日期 / 金额 / 距离 / 时长格式化，以及坐标相关的小判断
-import { DAY_COLORS } from './constants'
-import type { TripDay, TripItem } from './types'
+import { DAY_COLORS, ITEM_CATEGORIES, TRANSPORT_MODE_META, TRANSPORT_MODE_FALLBACK } from './constants'
+import type { ItemCategory, TripDay, TripItem } from './types'
 
 /** 按天取主题色（支持任意整数下标） */
 export function dayColor(index: number) {
   return DAY_COLORS[((index % DAY_COLORS.length) + DAY_COLORS.length) % DAY_COLORS.length]
+}
+
+/** 行程项类别的展示信息，未知类别按「其他」处理 */
+export function catMeta(category?: string | null) {
+  const key = (category || 'sightseeing') as ItemCategory
+  return ITEM_CATEGORIES[key] ?? ITEM_CATEGORIES.other
+}
+
+/** 城际交通方式的展示信息 */
+export function transportMeta(mode?: string | null) {
+  return TRANSPORT_MODE_META[mode || ''] ?? TRANSPORT_MODE_FALLBACK
+}
+
+/** 把「分钟」格式化成「4 小时 24 分」 */
+export function fmtMinutes(minutes?: number | null) {
+  const total = Math.round(Number(minutes) || 0)
+  if (total <= 0) return '—'
+  if (total < 60) return `${total} 分钟`
+  const h = Math.floor(total / 60)
+  const m = total % 60
+  return m ? `${h} 小时 ${m} 分` : `${h} 小时`
 }
 
 export function fmtMoney(value: number | string | null | undefined) {

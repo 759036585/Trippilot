@@ -1,5 +1,7 @@
 # 导入 httpx，这是一个支持异步的 HTTP 请求库（比 requests 更适合 FastAPI）
 import asyncio
+import re
+
 import httpx
 # 从配置文件读取高德 Key
 from config import settings
@@ -30,6 +32,8 @@ def _simplify_poi(poi: dict) -> dict | None:
 
     biz_ext = poi.get("biz_ext") or {}
     rating = _as_str(biz_ext.get("rating"))
+    # 酒店的参考价高德不一定给，有就带上，没有就留给模型估算
+    cost = _as_float(biz_ext.get("cost"))
     photos = poi.get("photos") or []
     photo = _as_str(photos[0].get("url")) if photos and isinstance(photos[0], dict) else ""
     tel = _as_str(poi.get("tel")).split(",")[0]
@@ -41,6 +45,7 @@ def _simplify_poi(poi: dict) -> dict | None:
         "distance": int(_as_float(poi.get("distance"))),
         "type": _as_str(poi.get("type")),
         "rating": rating,
+        "cost": round(cost) if cost > 0 else 0,
         "tel": tel,
         "photo": photo,
         "lng": lng,
@@ -140,6 +145,332 @@ async def search_around(
         if simplified and simplified["name"]:
             pois.append(simplified)
     return pois
+
+
+# --- 酒店搜索：给规划 Agent 挑真实酒店用 ---
+async def search_hotels(keywords: str, city: str, limit: int = 8) -> list[dict]:
+    """按关键词和城市搜索酒店，返回名称 / 地址 / 评分 / 参考价"""
+    params = {
+        "key": settings.AMAP_API_KEY,
+        "keywords": (keywords or "酒店").strip(),
+        "city": (city or "").strip(),
+        "types": "100000",  # 住宿服务
+        "offset": min(max(limit, 1), 25),
+        "page": 1,
+        "extensions": "all",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get("https://restapi.amap.com/v3/place/text", params=params)
+            data = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+
+    if data.get("status") != "1":
+        return []
+
+    hotels = []
+    for poi in data.get("pois", []):
+        simplified = _simplify_poi(poi)
+        if simplified and simplified["name"]:
+            hotels.append(simplified)
+        if len(hotels) >= limit:
+            break
+    return hotels
+
+
+# --- 城际交通：城市中心坐标 + 真实的驾车距离/耗时 ---
+_city_coord_cache: dict[str, tuple[float, float] | None] = {}
+
+
+async def _geocode_city(city: str) -> tuple[float, float] | None:
+    """城市名 -> (经度, 纬度)，结果缓存，避免反复打高德"""
+    name = (city or "").strip()
+    if not name:
+        return None
+    if name in _city_coord_cache:
+        return _city_coord_cache[name]
+
+    coord = None
+    params = {"key": settings.AMAP_API_KEY, "address": name, "city": name}
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get("https://restapi.amap.com/v3/geocode/geo", params=params)
+            data = response.json()
+        geocodes = data.get("geocodes") or []
+        if data.get("status") == "1" and geocodes:
+            location = _as_str(geocodes[0].get("location"))
+            lng_str, _, lat_str = location.partition(",")
+            lng, lat = _as_float(lng_str), _as_float(lat_str)
+            if lng and lat:
+                coord = (lng, lat)
+    except (httpx.HTTPError, ValueError, TypeError):
+        coord = None
+
+    _city_coord_cache[name] = coord
+    return coord
+
+
+async def get_intercity_info(origin_city: str, dest_city: str) -> dict:
+    """
+    返回两座城市中心的坐标，以及高德真实的驾车距离 / 耗时。
+    高铁和航班没有公开的实时接口，交给模型结合距离按常识估算。
+    """
+    origin_city = (origin_city or "").strip()
+    dest_city = (dest_city or "").strip()
+    origin_coord, dest_coord = await asyncio.gather(
+        _geocode_city(origin_city),
+        _geocode_city(dest_city),
+    )
+    if not origin_coord or not dest_coord:
+        return {
+            "error": f"无法解析城市坐标（{origin_city or '出发地'} / {dest_city or '目的地'}），请按常识估算"
+        }
+
+    origin_lnglat = f"{origin_coord[0]},{origin_coord[1]}"
+    dest_lnglat = f"{dest_coord[0]},{dest_coord[1]}"
+    route = await get_route_detail(origin_lnglat, dest_lnglat, "driving", city=origin_city)
+
+    distance_km = round(route["distance"] / 1000, 1) if route else 0
+    duration_minutes = round(route["duration"] / 60) if route else 0
+
+    return {
+        "origin": {"city": origin_city, "lng": origin_coord[0], "lat": origin_coord[1]},
+        "destination": {"city": dest_city, "lng": dest_coord[0], "lat": dest_coord[1]},
+        "driving": {
+            "distance_km": distance_km,
+            "duration_minutes": duration_minutes,
+            # 油费 + 过路费按每公里约 0.9 元粗略估算（每辆车）
+            "fuel_toll_cost_per_vehicle": round(distance_km * 0.9) if distance_km else 0,
+        },
+        "note": "驾车数据来自高德实时路线；高铁/航班的时间与票价请按常识估算，并标注为预估",
+    }
+
+
+# --- 地点坐标补全：模型偶尔不给经纬度，用高德反查兜底 ---
+_geocode_cache: dict[str, tuple[float, float] | None] = {}
+_geocode_semaphore = asyncio.Semaphore(2)
+
+# 高德个人 Key 的 QPS 很低，所有坐标查询统一节流，避免并发时被限流拿到错误结果
+_amap_rate_lock = asyncio.Lock()
+_amap_last_request_at = 0.0
+_AMAP_MIN_INTERVAL = 0.3
+
+
+async def _pace_amap():
+    global _amap_last_request_at
+    async with _amap_rate_lock:
+        loop = asyncio.get_running_loop()
+        wait = _amap_last_request_at + _AMAP_MIN_INTERVAL - loop.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _amap_last_request_at = loop.time()
+
+# 行程项名字里常见的活动后缀，去掉后更容易命中真实地点
+_PLACE_SUFFIXES = (
+    "办理入住", "周边简餐", "周边午餐", "周边晚餐", "周边", "简餐", "晚餐", "午餐",
+    "早餐", "夜宵", "夜景闲逛", "夜景", "闲逛", "打卡", "拍照", "看升旗", "游览", "参观",
+)
+
+
+def _parse_location(value) -> tuple[float, float] | None:
+    lng_str, _, lat_str = _as_str(value).partition(",")
+    lng, lat = _as_float(lng_str), _as_float(lat_str)
+    if lng and lat:
+        return (lng, lat)
+    return None
+
+
+def _place_candidates(name: str) -> list[str]:
+    """把「前门大街·鲜鱼口美食街晚餐」这类描述拆成可以查询的地名候选"""
+    raw = _as_str(name)
+    candidates: list[str] = []
+
+    def add(value: str):
+        value = value.strip(" ·+，,、/—–-")
+        value = re.sub(r"[\s·+，,、/—–-]+$", "", value)
+        if 2 <= len(value) <= 40 and value not in candidates:
+            candidates.append(value)
+
+    add(raw)
+    base = re.split(r"[（(]", raw)[0]
+    add(base)
+    for part in re.split(r"[·+，,、/\s]+", base):
+        add(part)
+    for value in list(candidates):
+        for suffix in _PLACE_SUFFIXES:
+            if value.endswith(suffix) and len(value) > len(suffix) + 1:
+                add(value[: -len(suffix)])
+    return candidates
+
+
+# 高德在限流 / 配额不足时会返回这些关键字，需要退避重试；
+# 其他 status=0（如地址无法解析）只代表「查无结果」，交给上层继续尝试 POI 搜索。
+_AMAP_RETRY_MARKERS = ("QPS", "LIMIT", "QUOTA", "RATE", "EXCEED", "BUSY", "FREQUENT")
+
+
+async def _request_amap(client: httpx.AsyncClient, url: str, params: dict) -> dict | None:
+    """
+    请求高德接口。成功返回 JSON；被限流时退避重试；
+    查无结果返回一个空的成功结构；接口彻底不可用时返回 None。
+    """
+    for attempt in range(3):
+        data = None
+        await _pace_amap()
+        try:
+            response = await client.get(url, params=params)
+            data = response.json()
+        except (httpx.HTTPError, ValueError):
+            data = None
+
+        if isinstance(data, dict):
+            if data.get("status") == "1":
+                return data
+
+            info = str(data.get("info") or "").upper()
+            if not any(marker in info for marker in _AMAP_RETRY_MARKERS):
+                # 业务层面的「查无结果」，不要重试，也不要当成接口故障
+                return {"status": "0", "geocodes": [], "pois": []}
+
+        if attempt < 2:
+            await asyncio.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def _same_city(requested: str, returned: str) -> bool:
+    left = _as_str(requested).replace("市", "")
+    right = _as_str(returned).replace("市", "")
+    if not left or not right:
+        return True
+    return left in right or right in left
+
+
+async def _geocode_address(client: httpx.AsyncClient, address: str, city: str):
+    """返回 (坐标, 标准化地址, 所在城市, 是否成功请求)"""
+    params = {"key": settings.AMAP_API_KEY, "address": address, "city": city}
+    data = await _request_amap(client, "https://restapi.amap.com/v3/geocode/geo", params)
+    if data is None:
+        return None, "", "", False
+    geocodes = data.get("geocodes") or []
+    if not geocodes:
+        return None, "", "", True
+    first = geocodes[0]
+    coord = _parse_location(first.get("location"))
+    formatted = _as_str(first.get("formatted_address"))
+    returned_city = _as_str(first.get("city")) or _as_str(first.get("province"))
+    return coord, formatted, returned_city, True
+
+
+def _longest_common_substring(left: str, right: str) -> int:
+    if not left or not right:
+        return 0
+    best = 0
+    previous = [0] * (len(right) + 1)
+    for i in range(1, len(left) + 1):
+        current = [0] * (len(right) + 1)
+        for j in range(1, len(right) + 1):
+            if left[i - 1] == right[j - 1]:
+                current[j] = previous[j - 1] + 1
+                if current[j] > best:
+                    best = current[j]
+        previous = current
+    return best
+
+
+def _match_score(candidate: str, poi_name: str) -> int:
+    """查询词和 POI 名称的相似度：包含关系优先，其次是最长公共子串"""
+    left = _as_str(candidate)
+    right = _as_str(poi_name)
+    if not left or not right:
+        return 0
+    if left in right or right in left:
+        return min(len(left), len(right)) + 2
+    return _longest_common_substring(left, right)
+
+
+async def _text_search_location(client: httpx.AsyncClient, keywords: str, city: str):
+    """返回 (坐标, 是否成功请求)"""
+    params = {
+        "key": settings.AMAP_API_KEY,
+        "keywords": keywords,
+        "city": city,
+        "offset": 10,
+        "page": 1,
+        "extensions": "base",
+    }
+    data = await _request_amap(client, "https://restapi.amap.com/v3/place/text", params)
+    if data is None:
+        return None, False
+
+    best_score = 0
+    best_coord = None
+    for poi in data.get("pois") or []:
+        if not _same_city(city, poi.get("cityname") or ""):
+            continue
+        score = _match_score(keywords, poi.get("name"))
+        if score < 3 or score <= best_score:
+            continue
+        location = _parse_location(poi.get("location"))
+        if location:
+            best_score = score
+            best_coord = location
+    return best_coord, True
+
+
+async def geocode_place(name: str, city: str) -> tuple[float, float] | None:
+    """
+    地点名 -> (经度, 纬度)。先试地理编码（校验地址相关性），
+    不相关或查无结果时再用 POI 搜索（带名称相似度校验）。结果（包括失败）会缓存。
+    """
+    raw = _as_str(name)
+    city = _as_str(city)
+    if not raw:
+        return None
+    cache_key = f"{city}|{raw}"
+    if cache_key in _geocode_cache:
+        return _geocode_cache[cache_key]
+
+    coord = None
+    api_failed = False
+    candidates = _place_candidates(raw)
+    try:
+        async with _geocode_semaphore:
+            async with httpx.AsyncClient(timeout=8) as client:
+                for candidate in candidates:
+                    # 1. 地理编码：结果地址必须包含查询词里的地名，避免把「农家午餐」解析到外地
+                    geo_coord, formatted, returned_city, ok = await _geocode_address(
+                        client, candidate, city
+                    )
+                    if not ok:
+                        api_failed = True
+                        coord = None
+                        break
+                    if (
+                        geo_coord
+                        and _same_city(city, returned_city)
+                        and _match_score(candidate, formatted) >= 3
+                    ):
+                        coord = geo_coord
+                        break
+
+                    # 2. POI 搜索：按名称相似度挑最匹配的一条
+                    coord, ok = await _text_search_location(client, candidate, city)
+                    if not ok:
+                        api_failed = True
+                        coord = None
+                        break
+                    if coord:
+                        break
+    except (httpx.HTTPError, ValueError, TypeError):
+        api_failed = True
+        coord = None
+
+    if len(_geocode_cache) > 1000:
+        _geocode_cache.clear()
+    # 接口故障导致的失败不缓存，下次打开行程还能再试
+    if not (api_failed and coord is None):
+        _geocode_cache[cache_key] = coord
+    return coord
 
 
 def _parse_polyline(polyline: str) -> list[list[float]]:

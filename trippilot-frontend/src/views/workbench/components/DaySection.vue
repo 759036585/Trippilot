@@ -39,6 +39,12 @@
               @click="emit('select', item)"
             >
               <div class="place-card__top">
+                <span
+                  class="place-cat"
+                  :style="{ color: catMeta(item.category).color, background: catTint(item.category) }"
+                >
+                  {{ catMeta(item.category).icon }} {{ catMeta(item.category).label }}
+                </span>
                 <span class="place-time">
                   <el-icon><Clock /></el-icon>
                   {{ item.start_time }} – {{ item.end_time }}
@@ -50,7 +56,10 @@
                 <span class="place-cost free" v-else>免费</span>
               </div>
               <div class="place-name">{{ item.place_name }}</div>
-              <div class="place-hint" v-if="isActive(item)">点击右侧查看「周边推荐」</div>
+              <div class="place-note" v-if="item.note">{{ item.note }}</div>
+              <div class="place-hint" v-if="isActive(item)">
+                {{ hasCoords(item) ? '点击右侧查看「周边推荐」' : '该地点暂无坐标，无法在地图定位' }}
+              </div>
             </div>
 
             <RouteChip
@@ -78,7 +87,7 @@
 
 <script setup lang="ts">
 import { Clock, Ticket } from '@element-plus/icons-vue'
-import { dayCost, fmtDate, fmtDist, fmtDur, fmtMoney, segmentKey, weekday } from '../format'
+import { catMeta, dayCost, fmtDate, fmtDist, fmtDur, fmtMoney, hasCoords, segmentKey, weekday } from '../format'
 import type { DayRouteSummary, RouteInfo, TravelMode, TripDay, TripItem } from '../types'
 import RouteChip from './RouteChip.vue'
 import RouteSteps from './RouteSteps.vue'
@@ -112,6 +121,19 @@ function isActive(item: TripItem) {
 
 function stepsOf(index: number) {
   return props.routes[segmentKey(props.day.day_index, index)]?.steps ?? []
+}
+
+// 类别标签的浅色底，和 ITEM_CATEGORIES 里的主题色对应
+const CAT_TINTS: Record<string, string> = {
+  sightseeing: '#ecfdf5',
+  food: '#fff7ed',
+  shopping: '#f5f3ff',
+  entertainment: '#fdf2f8',
+  other: '#f8fafc'
+}
+
+function catTint(category?: string | null) {
+  return CAT_TINTS[category || 'sightseeing'] ?? CAT_TINTS.other
 }
 </script>
 
@@ -288,6 +310,22 @@ function stepsOf(index: number) {
 }
 .place-cost.free {
   color: #94a3b8;
+}
+.place-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.place-note {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.4;
 }
 .place-name {
   margin-top: 4px;

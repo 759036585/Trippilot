@@ -5,7 +5,7 @@
     <div class="panel-head">
       <div>
         <h3>行程安排</h3>
-        <p class="panel-sub">{{ days.length }} 天 · {{ stopCount }} 个地点 · 预计 ¥{{ fmtMoney(totalCost) }}</p>
+        <p class="panel-sub">{{ days.length }} 天 · {{ stopCount }} 个地点 · 含交通住宿预计 ¥{{ fmtMoney(totalCost) }}</p>
       </div>
       <button class="mini-btn" v-if="hasCollapsed" @click="expandAll">展开全部</button>
     </div>
@@ -13,6 +13,14 @@
     <TravelModeBar :model-value="travelMode" @change="emit('switch-mode', $event)" />
 
     <div class="panel-scroll">
+      <PlanSummaryCard
+        v-if="transport || hotel"
+        :origin="origin"
+        :destination="destination"
+        :transport="transport"
+        :hotel="hotel"
+      />
+
       <DaySection
         v-for="day in days"
         :key="day.day_index"
@@ -45,13 +53,20 @@ import type {
   RouteInfo,
   TravelMode,
   TripDay,
-  TripItem
+  TripHotel,
+  TripItem,
+  TripTransport
 } from '../types'
 import DaySection from './DaySection.vue'
+import PlanSummaryCard from './PlanSummaryCard.vue'
 import TravelModeBar from './TravelModeBar.vue'
 
 defineProps<{
   days: TripDay[]
+  origin?: string | null
+  destination?: string | null
+  transport?: TripTransport | null
+  hotel?: TripHotel | null
   stopCount: number
   totalCost: number
   travelMode: TravelMode

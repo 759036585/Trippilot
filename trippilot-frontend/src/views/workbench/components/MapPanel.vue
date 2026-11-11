@@ -212,6 +212,27 @@ const emit = defineEmits<{
   border-color: #f97316;
   animation: tp-pulse 1.8s ease-in-out infinite;
 }
+/* 酒店标记：方形、靛蓝色，和按天编号的圆形景点标记区分开 */
+.tp-marker--hotel {
+  width: 28px;
+  height: 28px;
+}
+.tp-marker--hotel .tp-marker__pin {
+  --c: #6366f1;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: #6366f1;
+  border-width: 2px;
+  font-size: 11.5px;
+  box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
+}
+.tp-marker--hotel .tp-marker__label {
+  top: 32px;
+  border-color: #c7d2fe;
+  color: #4338ca;
+  font-weight: 600;
+}
 @keyframes tp-pulse {
   0%,
   100% {

@@ -5,6 +5,7 @@
   <div class="workbench">
     <WorkbenchTopBar
       :ready="status === 'ready' && !!tripData"
+      :origin="origin"
       :destination="tripData?.destination"
       :day-count="days.length"
       :stop-count="stopCount"
@@ -20,6 +21,10 @@
       <ItineraryPanel
         ref="itineraryRef"
         :days="days"
+        :origin="origin"
+        :destination="destination"
+        :transport="transport"
+        :hotel="hotel"
         :stop-count="stopCount"
         :total-cost="totalCost"
         :travel-mode="travelMode"
@@ -49,7 +54,7 @@
       <!-- 右侧：预算 + 周边推荐 + AI 助手 -->
       <aside class="right-panel">
         <BudgetCard
-          :days="days"
+          :breakdown="budgetBreakdown"
           :total-cost="totalCost"
           :budget="budget"
           :budget-percent="budgetPercent"
@@ -88,7 +93,17 @@ import NearbyPanel from './components/NearbyPanel.vue'
 import WorkbenchState from './components/WorkbenchState.vue'
 import WorkbenchTopBar from './components/WorkbenchTopBar.vue'
 import { fmtDate, hasCoords } from './format'
-import type { NearbyPoi, PageStatus, TripData, TripDay, TripItem } from './types'
+import type {
+  BudgetBreakdown,
+  ItemCategory,
+  NearbyPoi,
+  PageStatus,
+  TripData,
+  TripDay,
+  TripHotel,
+  TripItem,
+  TripTransport
+} from './types'
 import { useAmap } from './useAmap'
 import { useNearby } from './useNearby'
 import { useRoutes } from './useRoutes'
@@ -107,12 +122,21 @@ const itineraryRef = ref<InstanceType<typeof ItineraryPanel> | null>(null)
 
 const days = computed<TripDay[]>(() => tripData.value?.days ?? [])
 const stopCount = computed(() => days.value.reduce((sum, d) => sum + d.items.length, 0))
-const totalCost = computed(() =>
-  days.value.reduce(
+const origin = computed(() => tripData.value?.origin || '')
+const transport = computed<TripTransport | null>(() => tripData.value?.transport ?? null)
+const hotel = computed<TripHotel | null>(() => tripData.value?.hotel ?? null)
+const budgetBreakdown = computed<BudgetBreakdown | null>(
+  () => tripData.value?.budget_breakdown ?? null
+)
+
+// 总花费包含城际交通 / 住宿 / 餐饮 / 门票玩乐等全部项目；老行程没有分类数据时退回行程项合计
+const totalCost = computed(() => {
+  if (budgetBreakdown.value) return Number(budgetBreakdown.value.total) || 0
+  return days.value.reduce(
     (sum, d) => sum + d.items.reduce((s, i) => s + Number(i.cost_estimate || 0), 0),
     0
   )
-)
+})
 const budget = computed(() => {
   const value = Number(tripData.value?.budget)
   return Number.isFinite(value) && value > 0 ? value : null
@@ -144,6 +168,7 @@ const nearbyApi = useNearby({
 const amap = useAmap({
   days,
   activeItem,
+  hotel,
   segmentOf: routesApi.segmentOf,
   onSelectItem: selectItem
 })
@@ -234,6 +259,14 @@ function handleSelectMapDay(index: number) {
 }
 
 // ---------- 把周边推荐里的地点加入行程 ----------
+// 周边推荐分类 -> 行程项类别，加入后预算能正确归到餐饮 / 购物 / 景点
+const NEARBY_ITEM_CATEGORY: Record<string, ItemCategory> = {
+  scenic: 'sightseeing',
+  food: 'food',
+  shopping: 'shopping',
+  hotel: 'other'
+}
+
 async function addPoi(poi: NearbyPoi) {
   if (!tripData.value) return
   const dayIndex = activeDayIndex.value || days.value[0]?.day_index
@@ -244,7 +277,8 @@ async function addPoi(poi: NearbyPoi) {
       place_name: poi.name,
       lng: poi.lng,
       lat: poi.lat,
-      cost_estimate: 0
+      cost_estimate: 0,
+      category: NEARBY_ITEM_CATEGORY[nearbyCategory.value] || 'other'
     })
     ElMessage.success(`已将「${poi.name}」加入第 ${dayIndex} 天行程`)
     await fetchTripDetail({ resetView: false })
@@ -315,7 +349,7 @@ async function fetchTripDetail(options: { resetView?: boolean } = {}) {
   clearPollTimer()
   const { resetView = true } = options
   try {
-    const res: any = await request.get(`/api/v1/trips/${tripId}`)
+    const res: any = await request.get(`/api/v1/trips/${tripId}`, { timeout: 30000 })
     const previousId = activeItem.value?.id
     tripData.value = res
     status.value = 'ready'
@@ -327,11 +361,17 @@ async function fetchTripDetail(options: { resetView?: boolean } = {}) {
       if (resetView) fitAll()
     }
 
-    // 保持之前选中的地点（刷新后 id 可能变化，按名字兜底）
+    // 保持之前选中的地点（刷新后 id 可能变化，按名字兜底）；
+    // 默认优先选第一个有坐标的景点 / 餐饮，避免一进来就选中交通站或无法定位的项目
     const allItems = days.value.flatMap((d) => d.items)
+    const firstSight = allItems.find(
+      (i) => hasCoords(i) && (i.category === 'sightseeing' || i.category === 'food')
+    )
     const keep =
       allItems.find((i) => i.id === previousId) ??
       allItems.find((i) => i.place_name === activeItem.value?.place_name) ??
+      firstSight ??
+      allItems.find((i) => hasCoords(i)) ??
       allItems[0]
     if (keep) {
       const day = days.value.find((d) => d.items.some((i) => i.id === keep.id))

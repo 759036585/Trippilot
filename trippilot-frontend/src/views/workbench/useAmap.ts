@@ -10,7 +10,7 @@ import {
   fmtMoney,
   hasCoords
 } from './format'
-import type { NearbyPoi, RouteInfo, TripDay, TripItem } from './types'
+import type { NearbyPoi, RouteInfo, TripDay, TripHotel, TripItem } from './types'
 
 const AMAP_KEY = import.meta.env.VITE_AMAP_JS_KEY as string | undefined
 const AMAP_SECURITY_CODE = import.meta.env.VITE_AMAP_SECURITY_CODE as string | undefined
@@ -68,6 +68,8 @@ function loadAMap(): Promise<any> {
 interface UseAmapOptions {
   days: Ref<TripDay[]>
   activeItem: Ref<TripItem | null>
+  /** 酒店坐标存在时，在地图上额外画一个「宿」标记 */
+  hotel: Ref<TripHotel | null>
   segmentOf: (dayIndex: number, index: number) => RouteInfo | undefined
   onSelectItem: (item: TripItem, day: TripDay) => void
 }
@@ -82,6 +84,7 @@ export function useAmap(options: UseAmapOptions) {
   let dayMarkers: any[] = []
   let dayPolylines: any[] = []
   let nearbyMarkers: any[] = []
+  let hotelMarker: any = null
   const markerEls = new Map<number, HTMLElement>()
   let infoWindow: any = null
   let previewInfo: any = null
@@ -171,11 +174,12 @@ export function useAmap(options: UseAmapOptions) {
     const map = mapInstance.value
     if (!map || !AMapLib) return
 
-    if (dayMarkers.length || dayPolylines.length) {
-      map.remove([...dayMarkers, ...dayPolylines])
+    if (dayMarkers.length || dayPolylines.length || hotelMarker) {
+      map.remove([...dayMarkers, ...dayPolylines, hotelMarker].filter(Boolean))
     }
     dayMarkers = []
     dayPolylines = []
+    hotelMarker = null
     markerEls.clear()
 
     const visibleDays =
@@ -260,8 +264,31 @@ export function useAmap(options: UseAmapOptions) {
       })
     })
 
-    if (dayMarkers.length || dayPolylines.length) {
-      map.add([...dayPolylines, ...dayMarkers])
+    // 3. 酒店标记：不随「第几天」筛选变化，始终显示
+    const hotel = options.hotel.value
+    if (hotel && hotel.lng && hotel.lat) {
+      const content = document.createElement('div')
+      content.className = 'tp-marker tp-marker--hotel'
+      content.innerHTML =
+        `<span class="tp-marker__pin">宿</span>` +
+        `<span class="tp-marker__label">${esc(hotel.name)}</span>`
+
+      hotelMarker = new AMapLib.Marker({
+        position: [hotel.lng, hotel.lat],
+        content,
+        anchor: 'center',
+        zIndex: 150
+      })
+      hotelMarker.on('click', () => openHotelInfo())
+    }
+
+    const overlays = [
+      ...dayPolylines,
+      ...dayMarkers,
+      ...(hotelMarker ? [hotelMarker] : [])
+    ]
+    if (overlays.length) {
+      map.add(overlays)
     }
     highlightMarker(options.activeItem.value?.id)
   }
@@ -285,7 +312,11 @@ export function useAmap(options: UseAmapOptions) {
   function fitAll(animate = true) {
     const map = mapInstance.value
     if (!map) return
-    const overlays = [...dayMarkers, ...dayPolylines]
+    const overlays = [
+      ...dayMarkers,
+      ...dayPolylines,
+      ...(hotelMarker ? [hotelMarker] : [])
+    ]
     if (overlays.length) {
       map.setFitView(overlays, !animate, [80, 80, 80, 80], 15)
     }
@@ -318,6 +349,29 @@ export function useAmap(options: UseAmapOptions) {
 
   function closeInfo() {
     infoWindow?.close()
+  }
+
+  /** 点击酒店标记时展示住宿信息 */
+  function openHotelInfo() {
+    const hotel = options.hotel.value
+    if (!mapInstance.value || !infoWindow || !hotel || !hotel.lng || !hotel.lat) return
+
+    const nights = Number(hotel.nights) || 0
+    const price = Number(hotel.price_per_night) || 0
+    infoWindow.setContent(
+      `<div class="tp-info">` +
+        `<div class="tp-info__head"><span class="tp-info__dot" style="background:#6366f1"></span>${esc(hotel.name)}</div>` +
+        (hotel.rating ? `<div class="tp-info__row">★ ${esc(hotel.rating)}</div>` : '') +
+        (nights
+          ? `<div class="tp-info__row">🏨 ${nights} 晚${price ? ` · ¥${fmtMoney(price)}/晚` : ''}</div>`
+          : '') +
+        (hotel.address
+          ? `<div class="tp-info__row tp-info__row--muted">${esc(hotel.address)}</div>`
+          : '') +
+        `<div class="tp-info__foot">住宿合计 ¥${fmtMoney(hotel.cost)}</div>` +
+        `</div>`
+    )
+    infoWindow.open(mapInstance.value, [hotel.lng, hotel.lat])
   }
 
   // ---------- 周边推荐的地图预览 ----------
@@ -376,6 +430,7 @@ export function useAmap(options: UseAmapOptions) {
     }
     dayMarkers = []
     dayPolylines = []
+    hotelMarker = null
     markerEls.clear()
   }
 

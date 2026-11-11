@@ -1,11 +1,12 @@
 <!-- src/views/workbench/components/BudgetCard.vue -->
-<!-- 右栏顶部：总花费 / 预算进度 / 每天花费 -->
+<!-- 右栏顶部：总花费 / 预算进度 / 分类花费明细 -->
 <template>
   <section class="budget-card">
     <div class="budget-head">
       <span>预算明细</span>
       <span class="budget-badge" v-if="budget">{{ budgetPercent }}%</span>
     </div>
+
     <div class="budget-amount">
       <span class="currency">¥</span>{{ fmtMoney(totalCost) }}
       <span class="budget-total" v-if="budget">/ ¥{{ fmtMoney(budget) }}</span>
@@ -19,23 +20,27 @@
       <span v-if="travelers">人均 ¥{{ fmtMoney(totalCost / travelers) }}</span>
     </div>
 
-    <ul class="day-budget">
-      <li v-for="day in days" :key="day.day_index">
-        <span class="dot" :style="{ background: dayColor(day.day_index - 1) }"></span>
-        第 {{ day.day_index }} 天
-        <span class="day-budget__value">¥{{ fmtMoney(dayCost(day)) }}</span>
+    <ul class="breakdown" v-if="rows.length">
+      <li v-for="row in rows" :key="row.key">
+        <span class="bd-icon">{{ row.icon }}</span>
+        <span class="bd-label">{{ row.label }}</span>
+        <span class="bd-bar">
+          <i :style="{ width: row.percent + '%', background: row.color }"></i>
+        </span>
+        <span class="bd-value">¥{{ fmtMoney(row.value) }}</span>
       </li>
     </ul>
+    <p class="breakdown-empty" v-else>暂无分类花费</p>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { dayColor, dayCost, fmtMoney } from '../format'
-import type { TripDay } from '../types'
+import { fmtMoney } from '../format'
+import type { BudgetBreakdown } from '../types'
 
 const props = defineProps<{
-  days: TripDay[]
+  breakdown: BudgetBreakdown | null
   totalCost: number
   budget: number | null
   budgetPercent: number
@@ -43,6 +48,32 @@ const props = defineProps<{
 }>()
 
 const remaining = computed(() => (props.budget ? props.budget - props.totalCost : 0))
+
+type BreakdownKey = Exclude<keyof BudgetBreakdown, 'total'>
+
+const BUDGET_ROWS: { key: BreakdownKey; label: string; icon: string; color: string }[] = [
+  { key: 'transport', label: '城际交通', icon: '🚄', color: '#38bdf8' },
+  { key: 'local_transport', label: '市内交通', icon: '🚕', color: '#22d3ee' },
+  { key: 'accommodation', label: '住宿', icon: '🏨', color: '#a78bfa' },
+  { key: 'food', label: '餐饮', icon: '🍜', color: '#fb923c' },
+  { key: 'tickets', label: '门票玩乐', icon: '🎫', color: '#34d399' },
+  { key: 'shopping', label: '购物', icon: '🛍', color: '#f472b6' },
+  { key: 'other', label: '其他', icon: '📦', color: '#cbd5e1' }
+]
+
+const rows = computed(() => {
+  const breakdown = props.breakdown
+  if (!breakdown) return []
+  const total = Number(breakdown.total) || 0
+  return BUDGET_ROWS.map((row) => {
+    const value = Number(breakdown[row.key]) || 0
+    return {
+      ...row,
+      value,
+      percent: total > 0 ? Math.max(2, Math.round((value / total) * 100)) : 0
+    }
+  }).filter((row) => row.value > 0)
+})
 </script>
 
 <style scoped>
@@ -109,28 +140,49 @@ const remaining = computed(() => (props.budget ? props.budget - props.totalCost 
   font-size: 11.5px;
   opacity: 0.85;
 }
-.day-budget {
+.breakdown {
   list-style: none;
   margin: 14px 0 0;
   padding: 12px 0 0;
   border-top: 1px solid rgba(255, 255, 255, 0.18);
   display: grid;
-  gap: 6px;
+  gap: 7px;
 }
-.day-budget li {
-  display: flex;
+.breakdown li {
+  display: grid;
+  grid-template-columns: 16px 52px 1fr auto;
   align-items: center;
   gap: 7px;
+  font-size: 11.5px;
+}
+.bd-icon {
   font-size: 12px;
-  opacity: 0.95;
+  line-height: 1;
 }
-.day-budget .dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+.bd-label {
+  opacity: 0.9;
 }
-.day-budget__value {
-  margin-left: auto;
+.bd-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+}
+.bd-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+.bd-value {
   font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.breakdown-empty {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: 11.5px;
+  opacity: 0.75;
 }
 </style>

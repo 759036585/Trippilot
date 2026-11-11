@@ -22,7 +22,7 @@ from database.index import Base, engine, SessionLocal
 from database.models import User, Trip, TripDay, TripItem
 # 引入 Agent
 from services.agent import plan_trip_agent
-from services.amap import search_around, get_route_detail
+from services.amap import geocode_place, get_route_detail, search_around
 from services.security import create_token, decode_token, hash_password, verify_password
 
 # 自动建表
@@ -41,6 +41,10 @@ def _ensure_trip_columns():
     if "user_id" not in existing:
         statements.append("ALTER TABLE trips ADD COLUMN user_id INTEGER REFERENCES users(id)")
         statements.append("CREATE INDEX IF NOT EXISTS ix_trips_user_id ON trips (user_id)")
+    if "origin" not in existing:
+        statements.append("ALTER TABLE trips ADD COLUMN origin VARCHAR")
+    if "plan_json" not in existing:
+        statements.append("ALTER TABLE trips ADD COLUMN plan_json TEXT")
     if not statements:
         return
     with engine.begin() as conn:
@@ -49,7 +53,23 @@ def _ensure_trip_columns():
     print(f"🛠️ 已为 trips 表补充字段: {', '.join(statements)}")
 
 
+def _ensure_trip_item_columns():
+    existing = {col["name"] for col in inspect(engine).get_columns("trip_items")}
+    statements = []
+    if "category" not in existing:
+        statements.append("ALTER TABLE trip_items ADD COLUMN category VARCHAR")
+    if "note" not in existing:
+        statements.append("ALTER TABLE trip_items ADD COLUMN note VARCHAR")
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for sql in statements:
+            conn.execute(text(sql))
+    print(f"🛠️ 已为 trip_items 表补充字段: {', '.join(statements)}")
+
+
 _ensure_trip_columns()
+_ensure_trip_item_columns()
 
 app = FastAPI(title="TripPilot API", version="1.0.0")
 
@@ -168,12 +188,136 @@ def me(user: User = Depends(get_current_user)):
 
 
 class TripCreateRequest(BaseModel):
+    origin: str = ""
     destination: str
     start_date: date
     end_date: date
     travelers: int
     budget: float
     preferences: list[str] = []
+    # 经济型 / 舒适型 / 豪华型，影响 Agent 选酒店的价位
+    hotel_level: str = "舒适型"
+
+
+ITEM_CATEGORIES = {"sightseeing", "food", "shopping", "entertainment", "other"}
+# 行程项类别 -> 预算分项
+ITEM_BUDGET_BUCKETS = {
+    "sightseeing": "tickets",
+    "entertainment": "tickets",
+    "food": "food",
+    "shopping": "shopping",
+    "other": "other",
+}
+
+
+def parse_plan(plan_json: str | None) -> dict:
+    """plan_json 是城际交通 / 酒店 / 预算的 JSON 快照，解析失败时退回空对象"""
+    if not plan_json:
+        return {}
+    try:
+        plan = json.loads(plan_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return plan if isinstance(plan, dict) else {}
+
+
+def build_budget_breakdown(items, plan: dict) -> dict:
+    """
+    按「方案数据 + 行程项」实时汇总预算，保证用户后来手动加地点时金额也跟着变。
+    transport / accommodation / local_transport / other 来自方案，
+    餐饮 / 门票玩乐 / 购物 按行程项类别汇总。
+    """
+    plan_budget = plan.get("budget") if isinstance(plan.get("budget"), dict) else {}
+    transport = plan.get("transport") if isinstance(plan.get("transport"), dict) else {}
+    recommended = transport.get("recommended") if isinstance(transport.get("recommended"), dict) else {}
+    hotel = plan.get("hotel") if isinstance(plan.get("hotel"), dict) else {}
+
+    breakdown = {
+        "transport": float(recommended.get("cost") or 0),
+        "local_transport": float(plan_budget.get("local_transport") or 0),
+        "accommodation": float(hotel.get("cost") or 0),
+        "food": 0.0,
+        "tickets": 0.0,
+        "shopping": 0.0,
+        "other": float(plan_budget.get("other") or 0),
+    }
+
+    for item in items:
+        # 老数据的 category 为空，按景点门票处理
+        bucket = ITEM_BUDGET_BUCKETS.get(item.category or "sightseeing", "other")
+        breakdown[bucket] += float(item.cost_estimate or 0)
+
+    breakdown = {key: round(value, 2) for key, value in breakdown.items()}
+    breakdown["total"] = round(sum(breakdown.values()), 2)
+    return breakdown
+
+
+def trip_total_cost(trip) -> float:
+    items = [item for day in trip.days for item in day.items]
+    return build_budget_breakdown(items, parse_plan(trip.plan_json))["total"]
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    """模型兜底输出的 JSON 里数字可能是字符串，转换失败时用默认值"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# --- 补齐行程项坐标：模型偶尔只给地点名不给经纬度，会导致地图没点位、路线算不出来 ---
+def _is_valid_coord(value) -> bool:
+    try:
+        return value is not None and value != "" and float(value) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _item_has_coords(item) -> bool:
+    if isinstance(item, dict):
+        return _is_valid_coord(item.get("lng")) and _is_valid_coord(item.get("lat"))
+    return _is_valid_coord(item.lng) and _is_valid_coord(item.lat)
+
+
+def _item_place_name(item) -> str:
+    value = item.get("place_name") if isinstance(item, dict) else item.place_name
+    return str(value or "")
+
+
+def _set_item_coords(item, coord: tuple[float, float]):
+    if isinstance(item, dict):
+        item["lng"], item["lat"] = coord
+    else:
+        item.lng, item.lat = coord
+
+
+async def fill_item_coords(items, city: str) -> int:
+    """给缺少经纬度的行程项用高德补全，返回成功补全的数量"""
+    city = (city or "").strip()
+    if not city:
+        return 0
+
+    missing = [item for item in items if not _item_has_coords(item)]
+    if not missing:
+        return 0
+
+    # geocode_place 内部用信号量限制并发，这里可以放心并发等待
+    coords = await asyncio.gather(
+        *(geocode_place(_item_place_name(item), city) for item in missing)
+    )
+    resolved = 0
+    for item, coord in zip(missing, coords):
+        if coord:
+            _set_item_coords(item, coord)
+            resolved += 1
+    return resolved
 
 
 # --- 工具函数：把大模型的返回清洗成 JSON 对象 ---
@@ -199,7 +343,19 @@ def parse_agent_json(text: str) -> dict:
 async def run_agent_task(trip_id: int, request: TripCreateRequest):
     db = SessionLocal()
     try:
-        prompt = f"我想去{request.destination}玩，从{request.start_date}到{request.end_date}，共{request.travelers}人，总预算{request.budget}元，偏好是{','.join(request.preferences)}。请帮我规划行程。"
+        day_count = (request.end_date - request.start_date).days + 1
+        night_count = max(day_count - 1, 1)
+        stay_text = f"{day_count}天{day_count - 1}晚" if day_count > 1 else "当天往返"
+        origin = (request.origin or "").strip() or "我所在的城市"
+        prompt = (
+            f"我想从{origin}出发去{request.destination}旅游，"
+            f"{request.start_date} 出发、{request.end_date} 返回，"
+            f"共{stay_text}，{request.travelers}人，"
+            f"总预算{request.budget}元，住宿希望是{request.hotel_level}，"
+            f"偏好是{','.join(request.preferences) or '无'}。"
+            "请帮我规划一份完整行程：包括城际交通方案（推荐 + 备选）、"
+            "酒店住宿、每天的吃喝玩乐安排，并把交通、住宿、餐饮、门票玩乐等费用都算清楚。"
+        )
 
         # 1. 获取 Agent 返回的 JSON 字符串并解析
         result_str = await plan_trip_agent(prompt)
@@ -209,12 +365,43 @@ async def run_agent_task(trip_id: int, request: TripCreateRequest):
         if not days:
             raise ValueError(f"Agent 未返回任何行程天数据: {result_str[:200]}")
 
+        # 模型偶尔只给地点名不给经纬度，先补全，保证地图有点位、路线能计算
+        resolved = await fill_item_coords(
+            [item for day in days for item in (day.get("items") or [])],
+            str(trip_data.get("destination") or request.destination or ""),
+        )
+        if resolved:
+            print(f"🗺️ 已补全 {resolved} 个地点的坐标")
+
         trip = db.query(Trip).filter(Trip.id == trip_id).first()
         if not trip:
             print(f"行程 {trip_id} 已被删除，放弃写入")
             return
 
-        # 2. 写入数据库：先清空可能残留的旧数据，保证重试时不会重复
+        # 2. 整理城际交通 / 酒店 / 预算快照
+        hotel = trip_data.get("hotel") if isinstance(trip_data.get("hotel"), dict) else None
+        if hotel:
+            try:
+                nights = max(int(hotel.get("nights") or night_count), 1)
+            except (TypeError, ValueError):
+                nights = night_count
+            hotel["nights"] = nights
+            # 模型没写入住/退房日期时，用行程日期补全
+            hotel["check_in_date"] = hotel.get("check_in_date") or str(request.start_date)
+            hotel["check_out_date"] = hotel.get("check_out_date") or str(
+                min(request.start_date + timedelta(days=nights), request.end_date)
+            )
+
+        plan = {
+            "transport": trip_data.get("transport"),
+            "hotel": hotel,
+            "budget": trip_data.get("budget") or {},
+        }
+        origin_value = str(trip_data.get("origin") or request.origin or "").strip()
+        trip.origin = origin_value or None
+        trip.plan_json = json.dumps(plan, ensure_ascii=False)
+
+        # 3. 写入数据库：先清空可能残留的旧数据，保证重试时不会重复
         for old_day in list(trip.days):
             db.delete(old_day)
         db.flush()
@@ -229,17 +416,20 @@ async def run_agent_task(trip_id: int, request: TripCreateRequest):
             db.flush()  # flush 之后才能拿到 new_day.id
 
             for item_data in day_data.get("items", []):
+                category = str(item_data.get("category") or "sightseeing")
                 db.add(TripItem(
                     trip_day_id=new_day.id,
                     place_name=item_data.get("place_name"),
                     start_time=item_data.get("start_time"),
                     end_time=item_data.get("end_time"),
-                    cost_estimate=float(item_data.get("cost_estimate") or 0),
-                    lng=item_data.get("lng"),  # 新增
-                    lat=item_data.get("lat")   # 新增
+                    category=category if category in ITEM_CATEGORIES else "other",
+                    cost_estimate=_to_float(item_data.get("cost_estimate")),
+                    note=str(item_data.get("note") or "") or None,
+                    lng=_to_float_or_none(item_data.get("lng")),
+                    lat=_to_float_or_none(item_data.get("lat"))
                 ))
 
-        # 3. 更新状态为 ready
+        # 4. 更新状态为 ready
         trip.status = "ready"
         db.commit()
         print(f"✅ 行程 {trip_id} 规划完成")
@@ -272,6 +462,7 @@ def create_trip(
 
     # 2. 写入数据库（状态初始化为 planning）
     new_trip = Trip(
+        origin=(request.origin or "").strip() or None,
         destination=request.destination,
         start_date=request.start_date,
         end_date=request.end_date,
@@ -319,6 +510,7 @@ def my_trips(db: Session = Depends(get_db), user: User = Depends(get_current_use
         items = [item for day in trip.days for item in day.items]
         result.append({
             "trip_id": trip.id,
+            "origin": trip.origin,
             "destination": trip.destination,
             "status": trip.status,
             "start_date": str(trip.start_date) if trip.start_date else None,
@@ -327,31 +519,41 @@ def my_trips(db: Session = Depends(get_db), user: User = Depends(get_current_use
             "travelers": trip.travelers,
             "day_count": len(trip.days),
             "item_count": len(items),
-            "total_cost": sum(float(item.cost_estimate or 0) for item in items),
+            "total_cost": trip_total_cost(trip),
         })
     return {"trips": result}
 
 
 @app.get("/api/v1/trips/{trip_id}")
-def get_trip_detail(trip_id: int, db: Session = Depends(get_db)):
+async def get_trip_detail(trip_id: int, db: Session = Depends(get_db)):
     trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="行程不存在")
 
     # 组装返回给前端的数据格式
+    all_items = [item for day in trip.days for item in day.items]
+    plan = parse_plan(trip.plan_json)
+    breakdown = build_budget_breakdown(all_items, plan)
+
+    # 老行程 / 模型漏坐标时，打开详情顺便补全并写回数据库（结果有缓存，不会每次都查）
+    repaired = await fill_item_coords(all_items, trip.destination or "")
+    if repaired:
+        db.commit()
+        print(f"🗺️ 行程 {trip_id} 补全了 {repaired} 个地点坐标")
+
     days_data = []
-    total_cost = 0.0
     for day in sorted(trip.days, key=lambda d: d.day_index or 0):
         items_data = []
         # 按开始时间排序，保证列表顺序和实际游览顺序一致（新增地点也是插在合理位置）
         for item in sorted(day.items, key=lambda i: (i.start_time or "")):
-            total_cost += float(item.cost_estimate or 0)
             items_data.append({
                 "id": item.id,
                 "place_name": item.place_name,
                 "start_time": item.start_time,
                 "end_time": item.end_time,
+                "category": item.category or "sightseeing",
                 "cost_estimate": item.cost_estimate,
+                "note": item.note,
                 "lng": item.lng,
                 "lat": item.lat,
             })
@@ -363,13 +565,18 @@ def get_trip_detail(trip_id: int, db: Session = Depends(get_db)):
 
     return {
         "trip_id": trip.id,
+        "origin": trip.origin,
         "destination": trip.destination,
         "status": trip.status,
         "start_date": str(trip.start_date) if trip.start_date else None,
         "end_date": str(trip.end_date) if trip.end_date else None,
         "budget": trip.budget,
         "travelers": trip.travelers,
-        "total_cost": total_cost,
+        # 交通 / 酒店 / 分类预算，老行程可能为空
+        "transport": plan.get("transport"),
+        "hotel": plan.get("hotel"),
+        "budget_breakdown": breakdown,
+        "total_cost": breakdown["total"],
         "days": days_data
     }
 
@@ -454,6 +661,8 @@ class AddItemRequest(BaseModel):
     lng: float
     lat: float
     cost_estimate: float = 0
+    # 从周边推荐加入时的类别：sightseeing / food / shopping / entertainment / other
+    category: str = "other"
 
 
 def _minutes_of(time_str: str | None) -> int | None:
@@ -492,6 +701,7 @@ def add_trip_item(trip_id: int, day_index: int, request: AddItemRequest, db: Ses
         place_name=request.place_name,
         start_time=start,
         end_time=end,
+        category=request.category if request.category in ITEM_CATEGORIES else "other",
         cost_estimate=float(request.cost_estimate or 0),
         lng=request.lng,
         lat=request.lat,
@@ -505,6 +715,7 @@ def add_trip_item(trip_id: int, day_index: int, request: AddItemRequest, db: Ses
         "place_name": item.place_name,
         "start_time": item.start_time,
         "end_time": item.end_time,
+        "category": item.category,
         "cost_estimate": item.cost_estimate,
         "lng": item.lng,
         "lat": item.lat,

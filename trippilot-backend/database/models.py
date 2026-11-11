@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from database.index import Base
 
@@ -29,6 +29,8 @@ class Trip(Base):
     id = Column(Integer, primary_key=True, index=True)
     # 目的地列：字符串，建立索引（因为经常需要按目的地搜索）
     destination = Column(String, index=True)
+    # 出发地：为空表示老数据（只规划了目的地市内行程）
+    origin = Column(String, nullable=True)
     # 出发日期列：Date 类型
     start_date = Column(Date)
     # 结束日期列：Date 类型
@@ -38,6 +40,8 @@ class Trip(Base):
     # 用户填写的总预算与出行人数，用于工作台的预算面板（老数据可能为空）
     budget = Column(Float, nullable=True)
     travelers = Column(Integer, nullable=True)
+    # 城际交通 / 酒店 / 预算方案的 JSON 快照（由 Agent 生成）
+    plan_json = Column(Text, nullable=True)
     # 归属用户：游客创建的行程为空，登录后创建/认领的行程会写进这里
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
 
@@ -84,8 +88,12 @@ class TripItem(Base):
     start_time = Column(String)
     # 结束时间
     end_time = Column(String)
+    # 行程项类别：sightseeing / food / shopping / entertainment / other
+    category = Column(String, nullable=True)
     # 预估花费（浮点数），默认 0.0
     cost_estimate = Column(Float, default=0.0)
+    # 备注：如「建议点招牌菜」「需提前预约」
+    note = Column(String, nullable=True)
 
     # 新增经纬度字段
     lng = Column(Float, nullable=True)

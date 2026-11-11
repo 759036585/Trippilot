@@ -7,7 +7,7 @@
       <div class="form-card">
         <div class="form-card__head">
           <h2>创建你的旅程</h2>
-          <p class="subtitle">填写需求，AI 为你规划每天的景点、路线与预算</p>
+          <p class="subtitle">填写出发地、目的地和日期，AI 帮你规划城际交通、酒店住宿、每日行程与分类预算</p>
         </div>
 
         <!-- 游客提示：登录后行程才会保存 -->
@@ -19,10 +19,16 @@
 
         <!-- 表单区域 -->
         <el-form :model="formData" label-position="top">
-          <!-- 目的地 -->
-          <el-form-item label="目的地">
-            <el-input v-model="formData.destination" placeholder="如：成都" />
-          </el-form-item>
+          <!-- 出发地 / 目的地 -->
+          <div class="route-fields">
+            <el-form-item label="出发地">
+              <el-input v-model.trim="formData.origin" placeholder="如：北京" />
+            </el-form-item>
+            <span class="route-arrow">→</span>
+            <el-form-item label="目的地">
+              <el-input v-model.trim="formData.destination" placeholder="如：成都" />
+            </el-form-item>
+          </div>
 
           <!-- 日期范围选择 -->
           <el-form-item label="出行日期">
@@ -42,8 +48,17 @@
             <el-input-number v-model="formData.travelers" :min="1" :max="20" />
           </el-form-item>
 
+          <!-- 住宿档次 -->
+          <el-form-item label="住宿档次">
+            <el-radio-group v-model="formData.hotel_level">
+              <el-radio-button value="经济型">经济型</el-radio-button>
+              <el-radio-button value="舒适型">舒适型</el-radio-button>
+              <el-radio-button value="豪华型">豪华型</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+
           <!-- 预算 -->
-          <el-form-item label="总预算金额 (元)">
+          <el-form-item label="总预算金额 (元，含交通与住宿)">
             <el-input-number v-model="formData.budget" :min="500" :step="500" style="width: 100%" />
           </el-form-item>
 
@@ -70,7 +85,7 @@
             >
               {{ isLoading ? 'AI 正在生成...' : '生成我的行程' }}
             </el-button>
-            <p class="submit-tip">生成后可在工作台查看地图、路线与周边推荐</p>
+            <p class="submit-tip">生成后可在工作台查看交通方案、酒店、地图与分类预算</p>
           </div>
         </el-form>
       </div>
@@ -94,8 +109,10 @@ const userStore = useUserStore()
 
 // 表单数据对象 (reactive 适合处理对象)
 const formData = reactive({
+  origin: '',
   destination: '',
   travelers: 2,
+  hotel_level: '舒适型',
   budget: 5000,
   preferences: [] as string[]
 })
@@ -119,8 +136,12 @@ const goLogin = () => {
 // 提交表单函数
 const submitForm = async () => {
   // 1. 基础校验
-  if (!formData.destination || !dateRange.value) {
-    ElMessage.warning('请填写目的地和出行日期')
+  if (!formData.origin || !formData.destination || !dateRange.value) {
+    ElMessage.warning('请填写出发地、目的地和出行日期')
+    return
+  }
+  if (formData.origin === formData.destination) {
+    ElMessage.warning('出发地和目的地不能相同')
     return
   }
 
@@ -129,12 +150,14 @@ const submitForm = async () => {
   try {
     // 2. 组装发给后端的数据
     const payload = {
+      origin: formData.origin,
       destination: formData.destination,
       start_date: dateRange.value[0],
       end_date: dateRange.value[1],
       travelers: formData.travelers,
       budget: formData.budget,
-      preferences: formData.preferences
+      preferences: formData.preferences,
+      hotel_level: formData.hotel_level
     }
 
     // 3. 调用后端接口
@@ -220,6 +243,23 @@ const submitForm = async () => {
   cursor: pointer;
 }
 
+/* 出发地 → 目的地：并排显示，箭头夹在中间 */
+.route-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.route-fields :deep(.el-form-item) {
+  flex: 1;
+  margin-bottom: 18px;
+}
+.route-arrow {
+  margin-bottom: 28px;
+  color: #94a3b8;
+  font-size: 15px;
+  line-height: 1;
+}
+
 .submit-btn-wrapper {
   text-align: center;
   margin-top: 26px;
@@ -253,6 +293,16 @@ const submitForm = async () => {
   }
   .notice button {
     margin-left: 0;
+  }
+  .route-fields {
+    flex-direction: column;
+    gap: 0;
+  }
+  .route-fields :deep(.el-form-item) {
+    width: 100%;
+  }
+  .route-arrow {
+    display: none;
   }
 }
 </style>

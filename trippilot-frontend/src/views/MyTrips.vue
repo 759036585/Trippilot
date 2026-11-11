@@ -68,7 +68,13 @@
 
           <div class="trip-card__body">
             <div class="trip-card__title">
-              <h3>{{ trip.destination || '未命名行程' }}</h3>
+              <h3 class="trip-card__route">
+                <template v-if="trip.origin">
+                  <span class="trip-card__from">{{ trip.origin }}</span>
+                  <span class="trip-card__route-arrow">→</span>
+                </template>
+                {{ trip.destination || '未命名行程' }}
+              </h3>
               <el-icon class="trip-card__arrow"><ArrowRight /></el-icon>
             </div>
             <p class="trip-card__date">
@@ -120,6 +126,7 @@ import { useUserStore } from '../stores/user'
 
 interface TripSummary {
   trip_id: number
+  origin: string | null
   destination: string
   status: string
   start_date: string | null
@@ -405,6 +412,17 @@ onBeforeUnmount(stopPolling)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.trip-card__from {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.trip-card__route-arrow {
+  margin: 0 4px;
+  color: #94a3b8;
+  font-weight: 400;
 }
 
 .trip-card__arrow {
