@@ -140,7 +140,26 @@ jobs:
           echo "准备目录，清理上一次的构建产物"
           ssh "${SSH_OPTS[@]}" "$TARGET" APP_DIR="$APP_DIR" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          mkdir -p "$APP_DIR"
+
+          if ! mkdir -p "$APP_DIR" 2>/dev/null; then
+            echo "无法创建 $APP_DIR：$(dirname "$APP_DIR") 对用户 $(id -un) 不可写" >&2
+            exit 1
+          fi
+
+          # 属主自检：APP_DIR 里有不属于当前用户的文件时，rm 和 tar 解包都会 Permission denied
+          # （常见于之前用 root 或其他用户手工建过目录）
+          owner_bad=""
+          [ -w "$APP_DIR" ] || owner_bad="$APP_DIR 本身"
+          [ -n "$owner_bad" ] || owner_bad=$(find "$APP_DIR" ! -user "$(id -un)" -print -quit 2>/dev/null || true)
+          if [ -n "$owner_bad" ]; then
+            {
+              echo "部署用户 $(id -un) 不是 $APP_DIR 下所有文件的属主（例如：$owner_bad）"
+              echo "在服务器上执行一次修复后再重跑流水线："
+              echo "  sudo chown -R $(id -un):$(id -gn) $APP_DIR"
+            } >&2
+            exit 1
+          fi
+
           # dist 必须整体重建，否则旧的 hash 资源文件会和新 index.html 混在一起
           rm -rf "$APP_DIR/trippilot-frontend/dist"
           # 清掉 Python 缓存，避免加载到陈旧的 .pyc

@@ -31,6 +31,8 @@ sudo chown -R trippilot:trippilot /opt/trippilot
 
 `APP_DIR` 就是 `/opt/trippilot`，后端在 `/opt/trippilot/trippilot-backend`，前端产物在 `/opt/trippilot/trippilot-frontend/dist`。
 
+> ⚠️ `APP_DIR` 的属主必须和部署用户（`SERVER_USER`）一致。如果你用的是云厂商自带的 `admin` 用户，就把 `chown` 改成 `admin:admin`。属主不对时流水线会报 `rm: cannot remove ...: Permission denied`，同步前的自检会直接提示修复命令。
+
 ### 2. 安装运行环境
 
 ```bash
@@ -159,6 +161,7 @@ ssh-copy-id -i deploy_key.pub trippilot@你的服务器IP
 |---|---|
 | `Permission denied (publickey)` | 公钥没加到 `~/.ssh/authorized_keys`，或 `SERVER_USER` 不对 |
 | `sudo: a password is required` | `/etc/sudoers.d/trippilot-deploy` 没配对，注意命令必须写绝对路径且参数完全一致 |
+| `rm: cannot remove ...: Permission denied` / `tar: ... Cannot open: Permission denied` | `APP_DIR` 属主和部署用户不一致（常见于之前用 root 或别的用户手工建过目录）。服务器上 `sudo chown -R 部署用户:部署用户组 /opt/trippilot`，然后重跑流水线 |
 | 健康检查失败 | 流水线会打印 `journalctl -u trippilot -n 50`；本地对照 `sudo -u trippilot /opt/trippilot/trippilot-backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000` 看报错 |
 | 页面能开但接口 502 | 后端没起；`systemctl status trippilot`、`journalctl -u trippilot -f` |
 | 地图不显示、控制台报 `INVALID_USER_SCODE` | `VITE_AMAP_SECURITY_CODE` 没配或和高德控制台的 Key 不配对 |
@@ -189,7 +192,7 @@ npm run preview
 | `apt install nginx` | `dnf install -y nginx` |
 | `/etc/nginx/sites-available/` | `/etc/nginx/conf.d/` |
 | 默认 `python3` 可用 | **自带 python3 只有 3.6，必须 `dnf install -y python3.11`** |
-| `adduser trippilot` | 可以直接用自带的 `admin` 用户（有免密 sudo） |
+| `adduser trippilot` | 可以直接用自带的 `admin` 用户（有免密 sudo），此时 `SERVER_USER=admin`，`APP_DIR` 也要 `chown` 给 `admin` |
 | ufw / firewalld | 默认都关着，但**阿里云安全组要放行 80 端口** |
 
 一个可用的完整流程：
