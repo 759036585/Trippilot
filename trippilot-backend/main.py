@@ -22,6 +22,7 @@ from database.index import Base, engine, SessionLocal
 from database.models import User, Trip, TripDay, TripItem
 # 引入 Agent
 from services.agent import plan_trip_agent
+from services.planner_chat import chat_turn as planner_chat_turn
 from services.amap import geocode_place, get_route_detail, search_around
 from services.security import create_token, decode_token, hash_password, verify_password
 
@@ -197,6 +198,37 @@ class TripCreateRequest(BaseModel):
     preferences: list[str] = []
     # 经济型 / 舒适型 / 豪华型，影响 Agent 选酒店的价位
     hotel_level: str = "舒适型"
+
+
+# --- 对话式需求收集：前端聊天界面每轮带上完整对话和已收集的 draft ---
+class PlannerMessage(BaseModel):
+    role: str = "user"
+    content: str = ""
+
+
+class PlannerDraft(BaseModel):
+    origin: str = ""
+    destination: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    travelers: int | None = None
+    budget: float | None = None
+    hotel_level: str = ""
+    preferences: list[str] = []
+
+
+class PlannerChatRequest(BaseModel):
+    messages: list[PlannerMessage] = []
+    draft: PlannerDraft | None = None
+
+
+@app.post("/api/v1/planner/chat")
+async def planner_chat(request: PlannerChatRequest):
+    """对话式创建行程：AI 引导用户补齐出发地/目的地/日期/人数/预算等信息"""
+    return await planner_chat_turn(
+        [message.model_dump() for message in request.messages],
+        request.draft.model_dump() if request.draft else {},
+    )
 
 
 ITEM_CATEGORIES = {"sightseeing", "food", "shopping", "entertainment", "other"}
