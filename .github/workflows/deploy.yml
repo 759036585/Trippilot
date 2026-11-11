@@ -153,9 +153,15 @@ jobs:
           [ -n "$owner_bad" ] || owner_bad=$(find "$APP_DIR" ! -user "$(id -un)" -print -quit 2>/dev/null || true)
           if [ -n "$owner_bad" ]; then
             {
-              echo "部署用户 $(id -un) 不是 $APP_DIR 下所有文件的属主（例如：$owner_bad）"
-              echo "在服务器上执行一次修复后再重跑流水线："
-              echo "  sudo chown -R $(id -un):$(id -gn) $APP_DIR"
+              echo "::error::部署用户对 APP_DIR 没有写权限，同步必然失败"
+              echo "当前 SSH 用户：$(id -un)  uid=$(id -u)  组=$(id -gn)"
+              echo "APP_DIR 权限：$(stat -c '%U:%G %A' "$APP_DIR" 2>/dev/null || echo '读取失败')"
+              if [ "$owner_bad" != "$APP_DIR 本身" ]; then
+                echo "冲突文件：$owner_bad"
+                echo "冲突文件权限：$(stat -c '%U:%G %A' "$owner_bad" 2>/dev/null || echo '读取失败')"
+              fi
+              echo "修复：在服务器上执行（APP_DIR 换成 secret 里配的路径，用户名用上面那个）："
+              echo "  sudo chown -R $(id -un):$(id -gn) <APP_DIR>"
             } >&2
             exit 1
           fi
