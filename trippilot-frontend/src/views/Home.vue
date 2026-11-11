@@ -144,14 +144,6 @@
     <section class="section">
       <div class="cta">
         <div class="cta__glow"></div>
-        <div class="cta__text">
-          <h2>{{ userStore.isLoggedIn ? `欢迎回来，${userStore.displayName}` : '登录后，行程不会丢' }}</h2>
-          <p>
-            {{ userStore.isLoggedIn
-              ? '你的历史行程都保存在「我的行程」里，随时打开继续调整。'
-              : '注册一个账号，AI 生成的行程会自动保存，随时回看和修改。' }}
-          </p>
-        </div>
         <div class="cta__actions">
           <template v-if="userStore.isLoggedIn">
             <button class="cta__btn cta__btn--solid" type="button" @click="router.push('/trips')">
@@ -707,9 +699,9 @@ const destinations = [
   overflow: hidden;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 24px;
-  padding: 40px 44px;
+  padding: 32px 44px;
   border-radius: 22px;
   color: #fff;
   background: linear-gradient(120deg, #0f766e 0%, #0d9488 55%, #134e4a 100%);
@@ -725,24 +717,6 @@ const destinations = [
   border-radius: 50%;
   background: rgba(94, 234, 212, 0.35);
   filter: blur(70px);
-}
-
-.cta__text {
-  position: relative;
-  max-width: 560px;
-}
-
-.cta__text h2 {
-  margin: 0 0 10px;
-  font-size: clamp(20px, 2.4vw, 26px);
-  letter-spacing: 0.5px;
-}
-
-.cta__text p {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.8;
-  color: rgba(255, 255, 255, 0.82);
 }
 
 .cta__actions {
